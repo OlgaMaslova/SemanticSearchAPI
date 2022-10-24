@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import uuid
 from semantic.utils import create_vocabulary, create_embeddings_for_sentences, \
     create_embedding_for_sentence, semantic_search, is_valid_query
 
@@ -12,8 +13,8 @@ app = FastAPI(
                 "in a scientific text",
     version="0.0.1"
 )
-sentence_list = None
-sentence_embeddings = None
+vocabularies = {} # {vocabulary_id: sentence_list}
+embeddings = {} # {vocabulary_id: embeddings}
 origins = [
     "http://localhost",
     "http://localhost:4200",
@@ -42,13 +43,22 @@ async def root():
 @app.post("/upload-vocabulary/", status_code=200, summary="Uploads text",
           description="Loads text and splits it in sentences.",
           responses={
-              200: {"model": Message},
+              200:  {
+                   "description": "Upload vocabulary",
+                   "content": {
+                        "application/json": {
+                             "example": {"id": "vocabulary id"}
+                       }
+                   },
+              },
           }
           )
 async def load_vocabulary(voc: Vocabulary):
-    global sentence_list
+    global vocabularies
     sentence_list = create_vocabulary(voc.text)
-    return JSONResponse(status_code=200, content={"message": "Successful upload"})
+    voc_id = str(uuid.uuid4())
+    vocabularies[voc_id] = sentence_list
+    return JSONResponse(status_code=200, content={"id": voc_id})
 
 
 @app.get("/embeddings", status_code=200, summary="Creates embeddings",
@@ -65,11 +75,16 @@ async def load_vocabulary(voc: Vocabulary):
              },
          },
          )
-async def get_embeddings():
-    global sentence_list, sentence_embeddings
-    if not sentence_list:
+async def get_embeddings(vocabulary_id: str):
+    global vocabularies, embeddings
+    if vocabulary_id not in vocabularies:
         return JSONResponse(status_code=404, content={"message": "No sentences found, upload your text first"})
-    sentence_embeddings = create_embeddings_for_sentences(sentence_list)
+    if vocabulary_id in embeddings:
+        sentence_embeddings = embeddings[vocabulary_id]
+    else:
+        sentence_list = vocabularies[vocabulary_id]
+        sentence_embeddings = create_embeddings_for_sentences(sentence_list)
+        embeddings[vocabulary_id] = sentence_embeddings.tolist()
     response = []
     for i, embeddings in enumerate(sentence_embeddings):
         response.append(
@@ -94,11 +109,12 @@ async def get_embeddings():
               },
           },
           )
-async def semantic_query(query: str):
-    global sentence_list, sentence_embeddings
-    if not sentence_list:
+async def semantic_query(vocabulary_id: str, query: str):
+    global vocabularies, embeddings
+    if vocabulary_id not in vocabularies:
         return JSONResponse(status_code=404, content={"message": "No sentences found, upload your text first"})
-    if sentence_embeddings is None:
+    if vocabulary_id not in embeddings:
+        sentence_list = vocabularies[vocabulary_id]
         sentence_embeddings = create_embeddings_for_sentences(sentence_list)
     if not is_valid_query(query):
         return JSONResponse(status_code=400,
@@ -115,13 +131,15 @@ async def semantic_query(query: str):
 
 
 @app.get("/reset", status_code=200, summary="Resets data",
-         description="Cleans vocabulary and embeddings.",
+         description="Cleans vocabulary and embeddings for a given vocabulary id.",
          responses={
-             200: {"model": Message, "description": "The text was not uploaded"},
+             200: {"model": Message},
          }
          )
-async def reset():
-    global sentence_list, sentence_embeddings
-    sentence_list = None
-    sentence_embeddings = None
+async def reset(vocabulary_id: str):
+    global vocabularies, embeddings
+    if vocabulary_id in vocabularies:
+        del vocabularies[vocabulary_id]
+    if vocabulary_id in embeddings:
+        del embeddings[vocabulary_id]
     return JSONResponse(status_code=200, content={"message": "Reset successful"})
